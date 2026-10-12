@@ -1,0 +1,509 @@
+
+# ============================================================
+# PROJECT: PREDICTION OF AGRICULTURE CROP PRODUCTION IN INDIA
+# Complete Machine Learning Project
+# ============================================================
+
+!pip -q install pandas numpy matplotlib scikit-learn joblib
+
+import os
+import json
+import shutil
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import joblib
+
+from google.colab import files
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+warnings.filterwarnings("ignore")
+
+PROJECT = "Agriculture_Crop_Production_Prediction"
+os.makedirs(f"{PROJECT}/data", exist_ok=True)
+os.makedirs(f"{PROJECT}/outputs", exist_ok=True)
+
+print("=" * 60)
+print(" AGRICULTURE CROP PRODUCTION PREDICTION")
+print("=" * 60)
+
+# STEP 1: UPLOAD DATASET OR CREATE A PRACTICE DATASET
+print("\nUpload your agriculture CSV dataset.")
+print("If you do not have one yet, click Cancel/close the upload dialog")
+print("to create a clearly labelled practice dataset.")
+
+df = None
+
+try:
+    uploaded = files.upload()
+    csv_files = [f for f in uploaded if f.lower().endswith(".csv")]
+
+    if csv_files:
+        df = pd.read_csv(csv_files[0])
+        print("Uploaded dataset:", csv_files[0])
+except Exception:
+    pass
+
+if df is None:
+    print("\nCreating illustrative practice data.")
+    print("This is NOT official Indian agricultural data.")
+
+    records = []
+    crops = {
+        "Rice": 4.0,
+        "Wheat": 3.5,
+        "Maize": 2.8,
+        "Cotton": 1.8,
+        "Sugarcane": 65.0
+    }
+
+    states = [
+        "Tamil Nadu", "Punjab", "Karnataka",
+        "Maharashtra", "Uttar Pradesh"
+    ]
+
+    rng = np.random.default_rng(42)
+
+    for state in states:
+        for crop, base in crops.items():
+            for year in range(2012, 2024):
+                area = float(rng.uniform(1.0, 5.0))
+                rainfall = float(rng.uniform(500, 1600))
+                season = rng.choice(
+                    ["Kharif", "Rabi", "Summer"]
+                )
+
+                production = (
+                    base * area
+                    * (0.75 + rainfall / 2500)
+                    * (1 + 0.015 * (year - 2012))
+                    * rng.uniform(0.85, 1.15)
+                )
+
+                records.append({
+                    "State": state,
+                    "Crop": crop,
+                    "Year": year,
+                    "Season": season,
+                    "Area": round(area, 2),
+                    "Rainfall": round(rainfall, 2),
+                    "Production": round(production, 2)
+                })
+
+    df = pd.DataFrame(records)
+
+    df.to_csv(
+        f"{PROJECT}/data/practice_dataset.csv",
+        index=False
+    )
+
+    print("Practice dataset created:", df.shape)
+
+# STEP 2: CLEAN COLUMN NAMES
+
+df.columns = [
+    str(c).strip().lower().replace(" ", "_")
+    for c in df.columns
+]
+
+# Support common dataset column names
+aliases = {
+    "state_name": "state",
+    "district_name": "district",
+    "crop_year": "year",
+    "crop_name": "crop",
+    "area_1000_ha": "area",
+    "production_1000_tons": "production"
+}
+
+df.rename(
+    columns={
+        c: aliases[c]
+        for c in df.columns
+        if c in aliases
+    },
+    inplace=True
+)
+
+required = ["crop", "year", "area", "production"]
+
+missing = [c for c in required if c not in df.columns]
+
+if missing:
+    raise ValueError(
+        f"Missing columns: {missing}. "
+        "Your CSV must contain crop, year, area and production "
+        "columns, or their common equivalents."
+    )
+
+# STEP 3: DATA PREPROCESSING
+
+df["year"] = pd.to_numeric(df["year"], errors="coerce")
+df["area"] = pd.to_numeric(df["area"], errors="coerce")
+df["production"] = pd.to_numeric(
+    df["production"], errors="coerce"
+)
+
+df.replace([np.inf, -np.inf], np.nan, inplace=True)
+df.drop_duplicates(inplace=True)
+
+df = df.dropna(
+    subset=["crop", "year", "area", "production"]
+)
+
+df = df[
+    (df["area"] > 0) &
+    (df["production"] >= 0)
+].copy()
+
+if len(df) < 20:
+    raise ValueError(
+        "At least 20 valid rows are required for this demonstration."
+    )
+
+print("\nDataset shape after cleaning:", df.shape)
+print("\nDataset preview:")
+display(df.head())
+
+df.to_csv(
+    f"{PROJECT}/data/cleaned_dataset.csv",
+    index=False
+)
+
+# STEP 4: SELECT INPUT FEATURES
+
+categorical_candidates = [
+    "state", "district", "season", "crop"
+]
+
+categorical = [
+    c for c in categorical_candidates
+    if c in df.columns
+]
+
+numeric = ["year", "area"]
+
+if "rainfall" in df.columns:
+    numeric.append("rainfall")
+
+features = categorical + numeric
+target = "production"
+
+X = df[features].copy()
+y = df[target].copy()
+
+# STEP 5: TRAIN-TEST SPLIT
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=42
+)
+
+# STEP 6: PREPROCESSING PIPELINE
+
+preprocessor = ColumnTransformer([
+    (
+        "cat",
+        Pipeline([
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("encoder", OneHotEncoder(handle_unknown="ignore"))
+        ]),
+        categorical
+    ),
+    (
+        "num",
+        Pipeline([
+            ("imputer", SimpleImputer(strategy="median"))
+        ]),
+        numeric
+    )
+])
+
+# STEP 7: LINEAR REGRESSION MODEL
+
+model = Pipeline([
+    ("preprocessing", preprocessor),
+    ("regression", LinearRegression())
+])
+
+model.fit(X_train, y_train)
+
+predictions = np.maximum(
+    model.predict(X_test),
+    0
+)
+
+print("\nModel training completed successfully!")
+
+# STEP 8: MODEL EVALUATION
+
+mae = mean_absolute_error(y_test, predictions)
+rmse = np.sqrt(
+    mean_squared_error(y_test, predictions)
+)
+r2 = r2_score(y_test, predictions)
+
+metrics = pd.DataFrame([{
+    "Algorithm": "Linear Regression",
+    "MAE": round(mae, 4),
+    "RMSE": round(rmse, 4),
+    "R2_Score": round(r2, 4)
+}])
+
+print("\nMODEL EVALUATION RESULTS")
+display(metrics)
+
+metrics.to_csv(
+    f"{PROJECT}/outputs/model_metrics.csv",
+    index=False
+)
+
+# STEP 9: SAVE PREDICTIONS
+
+results = X_test.reset_index(drop=True).copy()
+results["Actual_Production"] = y_test.reset_index(
+    drop=True
+)
+results["Predicted_Production"] = predictions
+
+results["Absolute_Error"] = abs(
+    results["Actual_Production"] -
+    results["Predicted_Production"]
+)
+
+results.to_csv(
+    f"{PROJECT}/outputs/prediction_results.csv",
+    index=False
+)
+
+# STEP 10: ACTUAL VS PREDICTED GRAPH
+
+plt.figure(figsize=(8, 6))
+
+plt.scatter(y_test, predictions, alpha=0.7)
+
+lower = min(float(y_test.min()), float(predictions.min()))
+upper = max(float(y_test.max()), float(predictions.max()))
+
+plt.plot([lower, upper], [lower, upper])
+plt.xlabel("Actual Production")
+plt.ylabel("Predicted Production")
+plt.title("Actual vs Predicted Crop Production")
+plt.tight_layout()
+
+plt.savefig(
+    f"{PROJECT}/outputs/actual_vs_predicted.png",
+    dpi=150
+)
+
+plt.show()
+
+# STEP 11: TOP CROPS GRAPH
+
+crop_totals = (
+    df.groupby("crop")["production"]
+    .sum()
+    .sort_values(ascending=False)
+    .head(10)
+)
+
+plt.figure(figsize=(10, 6))
+crop_totals.sort_values().plot(kind="barh")
+
+plt.xlabel("Total Recorded Production")
+plt.ylabel("Crop")
+plt.title("Top 10 Crops by Recorded Production")
+plt.tight_layout()
+
+plt.savefig(
+    f"{PROJECT}/outputs/top_crops.png",
+    dpi=150
+)
+
+plt.show()
+
+# STEP 12: PRODUCTION DISTRIBUTION GRAPH
+
+plt.figure(figsize=(8, 5))
+plt.hist(df["production"], bins=25)
+
+plt.xlabel("Production")
+plt.ylabel("Number of Records")
+plt.title("Crop Production Distribution")
+plt.tight_layout()
+
+plt.savefig(
+    f"{PROJECT}/outputs/production_distribution.png",
+    dpi=150
+)
+
+plt.show()
+
+# STEP 13: SAVE FINAL MODEL
+
+# Refit using all available data for the saved model.
+model.fit(X, y)
+
+joblib.dump(
+    model,
+    f"{PROJECT}/outputs/crop_production_model.joblib"
+)
+
+with open(
+    f"{PROJECT}/outputs/model_config.json", "w"
+) as f:
+    json.dump({
+        "features": features,
+        "categorical_features": categorical,
+        "numeric_features": numeric,
+        "target": target
+    }, f, indent=4)
+
+# STEP 14: EXAMPLE PREDICTION
+
+example = X.iloc[[0]].copy()
+
+loaded_model = joblib.load(
+    f"{PROJECT}/outputs/crop_production_model.joblib"
+)
+
+example["Predicted_Production"] = np.maximum(
+    loaded_model.predict(X.iloc[[0]]),
+    0
+)
+
+example.to_csv(
+    f"{PROJECT}/outputs/example_prediction.csv",
+    index=False
+)
+
+# STEP 15: GENERATE README
+
+readme = """
+# Prediction of Agriculture Crop Production in India
+
+## Project Description
+This project demonstrates crop production estimation using
+Python and Linear Regression.
+
+## Technologies
+- Python
+- Pandas and NumPy
+- Matplotlib
+- Scikit-learn
+- Joblib
+- Google Colab
+
+## Workflow
+1. Dataset loading
+2. Data cleaning
+3. Feature selection
+4. Train-test splitting
+5. Linear Regression model training
+6. Model evaluation
+7. Graph generation
+8. Prediction CSV export
+9. Model saving
+
+## Evaluation
+See outputs/model_metrics.csv for the actual execution metrics.
+
+## Dataset Warning
+If the practice dataset was generated by this notebook, it is
+illustrative synthetic data and is not official Indian agricultural
+data. Replace it with a verified dataset and cite its source before
+using this project for evidence-based conclusions.
+
+## Limitations
+Random train-test split results do not establish future forecasting
+accuracy. Use time-based validation for future-year forecasting.
+"""
+
+with open(f"{PROJECT}/README.md", "w") as f:
+    f.write(readme)
+
+# STEP 16: GENERATE PROJECT REPORT
+
+report = f"""
+PREDICTION OF AGRICULTURE CROP PRODUCTION IN INDIA
+
+Machine Learning Project Report
+Submitted by: E. Mathavi
+
+1. ABSTRACT
+This project demonstrates agricultural crop production estimation
+using Python and a Linear Regression model.
+
+2. OBJECTIVES
+- Process crop production data.
+- Train a regression model.
+- Evaluate the model.
+- Visualize predictions.
+- Export results.
+
+3. TECHNOLOGIES
+Python, Pandas, NumPy, Matplotlib, Scikit-learn and Joblib.
+
+4. METHODOLOGY
+The dataset was cleaned, relevant features were selected, and data
+was divided into training and testing sets. Linear Regression was
+trained and evaluated using MAE, RMSE and R-squared.
+
+5. MODEL RESULTS
+MAE: {mae:.4f}
+RMSE: {rmse:.4f}
+R2 Score: {r2:.4f}
+
+6. LIMITATIONS
+The results depend on dataset quality. Synthetic practice data
+cannot be used as evidence of real-world crop prediction accuracy.
+
+7. CONCLUSION
+The project demonstrates a complete introductory machine learning
+workflow, including preprocessing, model training, evaluation,
+visualization and result export.
+
+8. DATA SOURCE
+Record the exact source, title and license of the real dataset
+used for the final submission.
+"""
+
+with open(
+    f"{PROJECT}/PROJECT_REPORT.txt", "w"
+) as f:
+    f.write(report)
+
+# STEP 17: PACKAGE ALL PROJECT FILES
+
+zip_name = f"{PROJECT}.zip"
+
+shutil.make_archive(
+    PROJECT,
+    "zip",
+    root_dir=".",
+    base_dir=PROJECT
+)
+
+print("\n" + "=" * 60)
+print("PROJECT COMPLETED!")
+print("=" * 60)
+
+print("\nFiles created:")
+for root, dirs, filenames in os.walk(PROJECT):
+    for name in filenames:
+        print(os.path.join(root, name))
+
+print("\nModel metrics:")
+display(metrics)
+
+print("\nDownloading the complete project ZIP...")
+files.download(zip_name)
